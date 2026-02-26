@@ -119,7 +119,9 @@ function authenticateToken(req, res, next) {
     },
   );
 }
-
+app.get("/", (req, res) => {
+  res.json({ message: "PropertyFlow CRM Backend is running!" });
+});
 // AUTH ROUTES
 app.post("/api/auth/register", async (req, res) => {
   try {
