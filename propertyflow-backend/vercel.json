@@ -1,0 +1,26 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "server.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "server.js"
+    }
+  ],
+  "env": {
+    "DB_USER": "@db_user",
+    "DB_HOST": "@db_host",
+    "DB_NAME": "@db_name",
+    "DB_PASSWORD": "@db_password",
+    "DB_PORT": "@db_port",
+    "JWT_SECRET": "@jwt_secret",
+    "AFRICASTALKING_API_KEY": "@africastalking_api_key",
+    "AFRICASTALKING_USERNAME": "@africastalking_username",
+    "SMS_SENDER_ID": "@sms_sender_id"
+  }
+}

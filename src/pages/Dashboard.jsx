@@ -6,6 +6,7 @@ const API_URL = import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
 function Dashboard({ token, agent }) {
   const [leads, setLeads] = useState([]);
+  const [properties, setProperties] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [showModal, setShowModal] = useState(false);
@@ -16,6 +17,7 @@ function Dashboard({ token, agent }) {
     client_name: "",
     client_phone: "",
     property_interest: "",
+    property_id: null,
     status: "new",
     follow_up_date: "",
     notes: "",
@@ -23,6 +25,7 @@ function Dashboard({ token, agent }) {
 
   useEffect(() => {
     fetchLeads();
+    fetchProperties();
   }, []);
 
   const fetchLeads = async () => {
@@ -41,6 +44,17 @@ function Dashboard({ token, agent }) {
     }
   };
 
+  const fetchProperties = async () => {
+    try {
+      const response = await axios.get(`${API_URL}/properties`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      setProperties(response.data);
+    } catch (err) {
+      console.error("Failed to load properties:", err);
+    }
+  };
+
   const handleOpenModal = (lead = null) => {
     if (lead) {
       setEditingLead(lead);
@@ -48,6 +62,7 @@ function Dashboard({ token, agent }) {
         client_name: lead.client_name,
         client_phone: lead.client_phone,
         property_interest: lead.property_interest,
+        property_id: lead.property_id || null,
         status: lead.status,
         follow_up_date: lead.follow_up_date?.split("T")[0] || "",
         notes: lead.notes || "",
@@ -58,6 +73,7 @@ function Dashboard({ token, agent }) {
         client_name: "",
         client_phone: "",
         property_interest: "",
+        property_id: null,
         status: "new",
         follow_up_date: "",
         notes: "",
@@ -91,6 +107,7 @@ function Dashboard({ token, agent }) {
       }
 
       fetchLeads();
+      fetchProperties();
       handleCloseModal();
       setError("");
     } catch (err) {
@@ -105,6 +122,7 @@ function Dashboard({ token, agent }) {
           headers: { Authorization: `Bearer ${token}` },
         });
         fetchLeads();
+        fetchProperties();
       } catch (err) {
         setError("Failed to delete lead");
       }
@@ -291,8 +309,42 @@ function Dashboard({ token, agent }) {
                 name="property_interest"
                 value={formData.property_interest}
                 onChange={handleInputChange}
-                placeholder="2BR Apartment in Westlands"
+                placeholder="e.g., 3 BR Apartment in Kilimani"
               />
+            </div>
+
+            <div className="form-group">
+              <label>Select Property (Optional)</label>
+              <select
+                name="property_id"
+                value={formData.property_id || ""}
+                onChange={(e) =>
+                  setFormData({
+                    ...formData,
+                    property_id: e.target.value
+                      ? parseInt(e.target.value)
+                      : null,
+                  })
+                }
+              >
+                <option value="">-- Select a property --</option>
+                {properties.length === 0 ? (
+                  <option disabled>
+                    No properties available. Add one first.
+                  </option>
+                ) : (
+                  properties.map((prop) => (
+                    <option
+                      key={prop.id}
+                      value={prop.id}
+                      disabled={prop.status !== "available"}
+                    >
+                      {prop.address} ({prop.bedrooms}BR) -{" "}
+                      {prop.status === "available" ? "Available" : "Booked"}
+                    </option>
+                  ))
+                )}
+              </select>
             </div>
 
             <div className="form-group">

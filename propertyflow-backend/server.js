@@ -55,33 +55,45 @@ async function initializeDatabase() {
     `);
 
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS leads (
-        id SERIAL PRIMARY KEY,
-        agent_id INT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-        client_name VARCHAR(255) NOT NULL,
-        client_phone VARCHAR(20) NOT NULL,
-        property_interest VARCHAR(255),
-        status VARCHAR(50) DEFAULT 'new',
-        follow_up_date DATE,
-        notes TEXT,
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
+  CREATE TABLE IF NOT EXISTS leads (
+    id SERIAL PRIMARY KEY,
+    agent_id INT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    property_id INT REFERENCES properties(id) ON DELETE SET NULL,
+    client_name VARCHAR(255) NOT NULL,
+    client_phone VARCHAR(20) NOT NULL,
+    property_interest VARCHAR(255),
+    status VARCHAR(50) DEFAULT 'new',
+    follow_up_date DATE,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+`);
 
+    // Update the properties table creation to include status:
     await pool.query(`
-      CREATE TABLE IF NOT EXISTS properties (
-        id SERIAL PRIMARY KEY,
-        agent_id INT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-        address VARCHAR(255) NOT NULL,
-        bedrooms INT,
-        bathrooms INT,
-        price DECIMAL(15,2),
-        type VARCHAR(50),
-        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-      );
-    `);
+  CREATE TABLE IF NOT EXISTS properties (
+    id SERIAL PRIMARY KEY,
+    agent_id INT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
+    address VARCHAR(255) NOT NULL,
+    bedrooms INT,
+    bathrooms INT,
+    price DECIMAL(15,2),
+    type VARCHAR(50),
+    status VARCHAR(50) DEFAULT 'available',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  );
+`);
+    await pool.query(`
+  ALTER TABLE leads
+  ADD COLUMN IF NOT EXISTS property_id INT REFERENCES properties(id) ON DELETE SET NULL
+`);
 
+    // Add status column to properties
+    await pool.query(`
+  ALTER TABLE properties
+  ADD COLUMN IF NOT EXISTS status VARCHAR(50) DEFAULT 'available'
+`);
     console.log("Database tables initialized successfully");
   } catch (error) {
     console.error("Database initialization error:", error);
@@ -187,6 +199,7 @@ app.post("/api/leads", authenticateToken, async (req, res) => {
       client_name,
       client_phone,
       property_interest,
+      property_id,
       follow_up_date,
       notes,
     } = req.body;
@@ -195,18 +208,40 @@ app.post("/api/leads", authenticateToken, async (req, res) => {
       return res.status(400).json({ error: "Client name and phone required" });
     }
 
+    // If property_id provided, verify it belongs to agent and update status
+    if (property_id) {
+      const propCheck = await pool.query(
+        "SELECT id FROM properties WHERE id = $1 AND agent_id = $2",
+        [property_id, req.user.id],
+      );
+      if (propCheck.rows.length === 0) {
+        return res
+          .status(400)
+          .json({ error: "Property not found or not yours" });
+      }
+    }
+
     const result = await pool.query(
-      `INSERT INTO leads (agent_id, client_name, client_phone, property_interest, follow_up_date, notes, status)
-       VALUES ($1, $2, $3, $4, $5, $6, 'new') RETURNING *`,
+      `INSERT INTO leads (agent_id, client_name, client_phone, property_interest, property_id, follow_up_date, notes, status)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'new') RETURNING *`,
       [
         req.user.id,
         client_name,
         client_phone,
         property_interest,
+        property_id || null,
         follow_up_date,
         notes,
       ],
     );
+
+    // If property assigned, update its status to booked
+    if (property_id) {
+      await pool.query(
+        "UPDATE properties SET status = 'booked' WHERE id = $1",
+        [property_id],
+      );
+    }
 
     res.json(result.rows[0]);
   } catch (error) {
@@ -243,27 +278,104 @@ app.get("/api/leads/:id", authenticateToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// GET /api/leads/:id - GET LEAD WITH PROPERTY DETAILS
+app.get("/api/leads/:id", authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT l.*, p.address, p.bedrooms, p.bathrooms, p.price, p.type, p.status as property_status
+       FROM leads l
+       LEFT JOIN properties p ON l.property_id = p.id
+       WHERE l.id = $1 AND l.agent_id = $2`,
+      [req.params.id, req.user.id],
+    );
 
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Lead not found" });
+    }
+
+    const lead = result.rows[0];
+    res.json({
+      ...lead,
+      property: lead.property_id
+        ? {
+            id: lead.property_id,
+            address: lead.address,
+            bedrooms: lead.bedrooms,
+            bathrooms: lead.bathrooms,
+            price: lead.price,
+            type: lead.type,
+            status: lead.property_status,
+          }
+        : null,
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// PUT /api/leads/:id - UPDATE LEAD (can change property)
 app.put("/api/leads/:id", authenticateToken, async (req, res) => {
   try {
     const {
       client_name,
       client_phone,
       property_interest,
+      property_id,
       status,
       follow_up_date,
       notes,
     } = req.body;
 
+    // Get current lead to see if property is changing
+    const currentLead = await pool.query(
+      "SELECT property_id FROM leads WHERE id = $1 AND agent_id = $2",
+      [req.params.id, req.user.id],
+    );
+
+    if (currentLead.rows.length === 0) {
+      return res.status(404).json({ error: "Lead not found" });
+    }
+
+    const oldPropertyId = currentLead.rows[0].property_id;
+
+    // If changing property, update statuses
+    if (property_id && property_id !== oldPropertyId) {
+      // Verify new property exists
+      const propCheck = await pool.query(
+        "SELECT id FROM properties WHERE id = $1 AND agent_id = $2",
+        [property_id, req.user.id],
+      );
+      if (propCheck.rows.length === 0) {
+        return res
+          .status(400)
+          .json({ error: "Property not found or not yours" });
+      }
+
+      // Release old property (set to available)
+      if (oldPropertyId) {
+        await pool.query(
+          "UPDATE properties SET status = 'available' WHERE id = $1",
+          [oldPropertyId],
+        );
+      }
+
+      // Book new property
+      await pool.query(
+        "UPDATE properties SET status = 'booked' WHERE id = $1",
+        [property_id],
+      );
+    }
+
     const result = await pool.query(
       `UPDATE leads 
-       SET client_name = $1, client_phone = $2, property_interest = $3, status = $4, follow_up_date = $5, notes = $6, updated_at = CURRENT_TIMESTAMP
-       WHERE id = $7 AND agent_id = $8
+       SET client_name = $1, client_phone = $2, property_interest = $3, property_id = $4, status = $5, follow_up_date = $6, notes = $7, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $8 AND agent_id = $9
        RETURNING *`,
       [
         client_name,
         client_phone,
         property_interest,
+        property_id || null,
         status,
         follow_up_date,
         notes,
@@ -281,25 +393,207 @@ app.put("/api/leads/:id", authenticateToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
+// DELETE /api/leads/:id - DELETE LEAD (release property)
 app.delete("/api/leads/:id", authenticateToken, async (req, res) => {
   try {
-    const result = await pool.query(
-      "DELETE FROM leads WHERE id = $1 AND agent_id = $2 RETURNING id",
+    // Get lead to find its property
+    const leadResult = await pool.query(
+      "SELECT property_id FROM leads WHERE id = $1 AND agent_id = $2",
       [req.params.id, req.user.id],
     );
 
-    if (result.rows.length === 0) {
+    if (leadResult.rows.length === 0) {
       return res.status(404).json({ error: "Lead not found" });
     }
 
-    res.json({ message: "Lead deleted" });
+    const propertyId = leadResult.rows[0].property_id;
+
+    // Delete the lead
+    await pool.query("DELETE FROM leads WHERE id = $1 AND agent_id = $2", [
+      req.params.id,
+      req.user.id,
+    ]);
+
+    // Release the property (set to available)
+    if (propertyId) {
+      await pool.query(
+        "UPDATE properties SET status = 'available' WHERE id = $1",
+        [propertyId],
+      );
+    }
+
+    res.json({ message: "Lead deleted and property released" });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 });
 
-// SMS REMINDER ROUTE - HYBRID APPROACH (AGENT + CLIENT)
+// SMS REMINDER ROUTE - HYBRID APPROACH (AGENT + CLIENT) SANDBOXED FOR NOW
+// app.post(
+//   "/api/leads/:id/send-reminder",
+//   authenticateToken,
+//   async (req, res) => {
+//     try {
+//       const leadResult = await pool.query(
+//         "SELECT * FROM leads WHERE id = $1 AND agent_id = $2",
+//         [req.params.id, req.user.id],
+//       );
+
+//       if (leadResult.rows.length === 0) {
+//         return res.status(404).json({ error: "Lead not found" });
+//       }
+
+//       const lead = leadResult.rows[0];
+//       const agentResult = await pool.query(
+//         "SELECT phone, name FROM agents WHERE id = $1",
+//         [req.user.id],
+//       );
+//       const agent = agentResult.rows[0];
+
+//       // SMS 1: Reminder to agent about the lead
+//       const agentMessage = `PropertyFlow Reminder: Follow up with ${lead.client_name} (${lead.client_phone}) regarding ${lead.property_interest}. Status: ${lead.status}`;
+
+//       // SMS 2: Notification to client about agent interest
+//       const clientMessage = `Hi ${lead.client_name}, thanks for your interest in ${lead.property_interest}. ${agent.name} from PropertyFlow will contact you shortly. Reply STOP to opt out.`;
+
+//       const results = {
+//         agentSMS: null,
+//         clientSMS: null,
+//         message: "",
+//         status: "sent",
+//         timestamp: new Date(),
+//       };
+
+//       if (smsService) {
+//         // Send SMS to AGENT
+//         try {
+//           console.log(`\n[SMS 1/2] Sending AGENT REMINDER to: ${agent.phone}`);
+//           console.log(`Message: ${agentMessage}\n`);
+
+//           const agentResponse = await smsService.send({
+//             to: [agent.phone],
+//             message: agentMessage,
+//           });
+//           console.log(
+//             "AGENT SMS Response:",
+//             agentResponse.SMSMessageData.Recipients,
+//           );
+
+//           // Extract agent SMS details
+//           if (
+//             agentResponse.SMSMessageData &&
+//             agentResponse.SMSMessageData.Recipients &&
+//             agentResponse.SMSMessageData.Recipients.length > 0
+//           ) {
+//             const recipient = agentResponse.SMSMessageData.Recipients[0];
+//             results.agentSMS = {
+//               number: recipient.number,
+//               statusCode: recipient.statusCode,
+//               status: recipient.status,
+//               cost: recipient.cost,
+//               messageId: recipient.messageId,
+//             };
+//           }
+//         } catch (agentError) {
+//           console.error("Agent SMS Error:", agentError.message);
+//           results.agentSMS = {
+//             error: agentError.message,
+//             status: "failed",
+//           };
+//         }
+
+//         // Send SMS to CLIENT
+//         try {
+//           console.log(
+//             `[SMS 2/2] Sending CLIENT NOTIFICATION to: ${lead.client_phone}`,
+//           );
+//           console.log(`Message: ${clientMessage}\n`);
+
+//           const clientResponse = await smsService.send({
+//             to: [lead.client_phone],
+//             message: clientMessage,
+//           });
+//           console.log(
+//             "CLIENT SMS Response:",
+//             clientResponse.SMSMessageData.Recipients,
+//           );
+
+//           // Extract client SMS details
+//           if (
+//             clientResponse.SMSMessageData &&
+//             clientResponse.SMSMessageData.Recipients &&
+//             clientResponse.SMSMessageData.Recipients.length > 0
+//           ) {
+//             const recipient = clientResponse.SMSMessageData.Recipients[0];
+//             results.clientSMS = {
+//               number: recipient.number,
+//               statusCode: recipient.statusCode,
+//               status: recipient.status,
+//               cost: recipient.cost,
+//               messageId: recipient.messageId,
+//             };
+//           }
+//         } catch (clientError) {
+//           console.error("Client SMS Error:", clientError.message);
+//           results.clientSMS = {
+//             error: clientError.message,
+//             status: "failed",
+//           };
+//         }
+
+//         // Determine overall success
+//         if (results.agentSMS?.statusCode === 101) {
+//           results.message =
+//             "SMS sent successfully to both agent and client via Africa's Talking!";
+//         } else if (results.agentSMS?.error) {
+//           results.message = "SMS delivery failed";
+//           results.status = "failed";
+//         } else {
+//           results.message = "SMS delivery completed";
+//         }
+
+//         res.json({
+//           ...results,
+//           provider: "Africa's Talking",
+//           agentReminder: agentMessage,
+//           clientNotification: clientMessage,
+//         });
+//       } else {
+//         // Mock SMS (demo mode)
+//         console.log(`\n[DEMO MODE] SMS SIMULATION`);
+//         console.log(`\n[SMS 1/2] AGENT REMINDER to: ${agent.phone}`);
+//         console.log(`Message: ${agentMessage}`);
+//         console.log(`\n[SMS 2/2] CLIENT NOTIFICATION to: ${lead.client_phone}`);
+//         console.log(`Message: ${clientMessage}\n`);
+
+//         results.agentSMS = {
+//           number: agent.phone,
+//           status: "simulated",
+//           statusCode: 101,
+//         };
+//         results.clientSMS = {
+//           number: lead.client_phone,
+//           status: "simulated",
+//           statusCode: 101,
+//         };
+//         results.message =
+//           "SMS reminders sent in DEMO MODE (Configure Africa's Talking for real SMS)";
+
+//         res.json({
+//           ...results,
+//           provider: "mock",
+//           agentReminder: agentMessage,
+//           clientNotification: clientMessage,
+//           hint: "To enable real SMS, set AFRICASTALKING_API_KEY and AFRICASTALKING_USERNAME in .env",
+//         });
+//       }
+//     } catch (error) {
+//       console.error("Reminder Error:", error);
+//       res.status(500).json({ error: error.message });
+//     }
+//   },
+// );
+// LIVE SEND SMS ROUTE - UNCOMMENT ABOVE AND COMMENT BELOW TO ENABLE REAL SMS
 app.post(
   "/api/leads/:id/send-reminder",
   authenticateToken,
@@ -344,6 +638,7 @@ app.post(
           const agentResponse = await smsService.send({
             to: [agent.phone],
             message: agentMessage,
+            senderId: process.env.SMS_SENDER_ID || "PropertyFlow",
           });
           console.log(
             "AGENT SMS Response:",
@@ -383,6 +678,7 @@ app.post(
           const clientResponse = await smsService.send({
             to: [lead.client_phone],
             message: clientMessage,
+            senderId: process.env.SMS_SENDER_ID || "PropertyFlow",
           });
           console.log(
             "CLIENT SMS Response:",
@@ -464,8 +760,23 @@ app.post(
     }
   },
 );
-
 // PROPERTIES ROUTES
+app.get("/api/properties/available", authenticateToken, async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, address, bedrooms, bathrooms, price, type, status
+       FROM properties
+       WHERE agent_id = $1
+       ORDER BY status DESC, address ASC`,
+      [req.user.id],
+    );
+
+    res.json(result.rows);
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 app.post("/api/properties", authenticateToken, async (req, res) => {
   try {
     const { address, bedrooms, bathrooms, price, type } = req.body;
@@ -485,7 +796,47 @@ app.post("/api/properties", authenticateToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+// PUT /api/properties/:id - UPDATE PROPERTY
+app.put("/api/properties/:id", authenticateToken, async (req, res) => {
+  try {
+    const { address, bedrooms, bathrooms, price, type, status } = req.body;
 
+    // If only status is being updated (from dropdown)
+    if (status && !address) {
+      const result = await pool.query(
+        `UPDATE properties 
+         SET status = $1
+         WHERE id = $2 AND agent_id = $3
+         RETURNING *`,
+        [status, req.params.id, req.user.id],
+      );
+
+      if (result.rows.length === 0) {
+        return res.status(404).json({ error: "Property not found" });
+      }
+
+      return res.json(result.rows[0]);
+    }
+
+    // If full property update (from edit modal)
+    const result = await pool.query(
+      `UPDATE properties 
+       SET address = $1, bedrooms = $2, bathrooms = $3, price = $4, type = $5
+       WHERE id = $6 AND agent_id = $7
+       RETURNING *`,
+      [address, bedrooms, bathrooms, price, type, req.params.id, req.user.id],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Property not found" });
+    }
+
+    res.json(result.rows[0]);
+  } catch (error) {
+    console.error("Update Property Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
 app.get("/api/properties", authenticateToken, async (req, res) => {
   try {
     const result = await pool.query(
@@ -498,7 +849,85 @@ app.get("/api/properties", authenticateToken, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+app.delete("/api/properties/:id", authenticateToken, async (req, res) => {
+  try {
+    // Check if property is assigned to any leads
+    const leadCheck = await pool.query(
+      "SELECT COUNT(*) as count FROM leads WHERE property_id = $1 AND agent_id = $2",
+      [req.params.id, req.user.id],
+    );
 
+    if (parseInt(leadCheck.rows[0].count) > 0) {
+      return res.status(400).json({
+        error: "Cannot delete property. It is assigned to one or more leads.",
+      });
+    }
+
+    // Delete the property
+    const result = await pool.query(
+      "DELETE FROM properties WHERE id = $1 AND agent_id = $2 RETURNING id",
+      [req.params.id, req.user.id],
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: "Property not found" });
+    }
+
+    res.json({ message: "Property deleted successfully" });
+  } catch (error) {
+    console.error("Delete Property Error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+// SMS DELIVERY REPORT CALLBACK
+app.post("/api/sms/delivery", async (req, res) => {
+  try {
+    const { id, phoneNumber, status, statusCode } = req.body;
+    console.log("\nSMS DELIVERY REPORT:");
+    console.log("Message ID:", id);
+    console.log("Phone:", phoneNumber);
+    console.log("Status:", status);
+    console.log("Status Code:", statusCode);
+    res.status(200).json({ message: "Delivery report received" });
+  } catch (error) {
+    console.error("Delivery Report Error:", error);
+    res.status(200).json({ message: "Delivery report received" });
+  }
+});
+
+// SMS INBOX CALLBACK
+// Africa's Talking will POST to this endpoint when clients reply
+app.post("/api/sms/inbox", async (req, res) => {
+  try {
+    const { from, to, text, date } = req.body;
+    console.log("\nSMS INBOX MESSAGE:");
+    console.log("From:", from);
+    console.log("Message:", text);
+    console.log("Date:", date);
+
+    if (text.toUpperCase().includes("STOP")) {
+      console.log("Client opted out with STOP");
+    }
+
+    res.status(200).json({ message: "Inbox message received" });
+  } catch (error) {
+    console.error("Inbox Error:", error);
+    res.status(200).json({ message: "Inbox message received" });
+  }
+});
+
+// Optional: Get SMS logs (for viewing delivery history)
+app.get("/api/sms/logs", authenticateToken, async (req, res) => {
+  try {
+    res.json({
+      message:
+        "SMS logging can be implemented by storing delivery reports in database",
+      hint: "Create sms_logs table to track all sent messages and their delivery status",
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
 // Health check
 app.get("/api/health", (req, res) => {
   res.json({
@@ -510,15 +939,13 @@ app.get("/api/health", (req, res) => {
 });
 
 // Initialize and start server
-const PORT = process.env.PORT || 5000;
-
-initializeDatabase().then(() => {
-  app.listen(PORT, () => {
-    console.log(`\n PropertyFlow CRM Backend running on port ${PORT}`);
-    console.log(
-      ` SMS Status: ${smsService ? " REAL SMS ENABLED" : " DEMO MODE"}\n`,
-    );
+if (process.env.NODE_ENV !== "production") {
+  const PORT = process.env.PORT || 5000;
+  initializeDatabase().then(() => {
+    app.listen(PORT, () => {
+      console.log(`PropertyFlow CRM Backend running on port ${PORT}`);
+    });
   });
-});
+}
 
 module.exports = app;
