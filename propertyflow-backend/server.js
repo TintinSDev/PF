@@ -18,6 +18,9 @@ const pool = new Pool({
   database: process.env.DB_NAME || "propertyflow",
   password: process.env.DB_PASSWORD || "password",
   port: process.env.DB_PORT || 5432,
+  ssl: {
+    rejectUnauthorized: false,
+  },
 });
 
 // Africa's Talking Setup - REAL SMS INTEGRATION
