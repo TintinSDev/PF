@@ -299,7 +299,7 @@ app.delete("/api/leads/:id", authenticateToken, async (req, res) => {
   }
 });
 
-// SMS REMINDER ROUTE - NOW WITH REAL SMS SUPPORT
+// SMS REMINDER ROUTE - HYBRID APPROACH (AGENT + CLIENT)
 app.post(
   "/api/leads/:id/send-reminder",
   authenticateToken,
@@ -316,57 +316,145 @@ app.post(
 
       const lead = leadResult.rows[0];
       const agentResult = await pool.query(
-        "SELECT phone FROM agents WHERE id = $1",
+        "SELECT phone, name FROM agents WHERE id = $1",
         [req.user.id],
       );
       const agent = agentResult.rows[0];
 
-      const message = `PropertyFlow Reminder: Follow up with ${lead.client_name} (${lead.client_phone}) regarding ${lead.property_interest}. Status: ${lead.status}`;
+      // SMS 1: Reminder to agent about the lead
+      const agentMessage = `PropertyFlow Reminder: Follow up with ${lead.client_name} (${lead.client_phone}) regarding ${lead.property_interest}. Status: ${lead.status}`;
+
+      // SMS 2: Notification to client about agent interest
+      const clientMessage = `Hi ${lead.client_name}, thanks for your interest in ${lead.property_interest}. ${agent.name} from PropertyFlow will contact you shortly. Reply STOP to opt out.`;
+
+      const results = {
+        agentSMS: null,
+        clientSMS: null,
+        message: "",
+        status: "sent",
+        timestamp: new Date(),
+      };
 
       if (smsService) {
+        // Send SMS to AGENT
         try {
-          const response = await smsService.send({
+          console.log(`\n[SMS 1/2] Sending AGENT REMINDER to: ${agent.phone}`);
+          console.log(`Message: ${agentMessage}\n`);
+
+          const agentResponse = await smsService.send({
             to: [agent.phone],
-            message: message,
+            message: agentMessage,
           });
-          console.log(response.SMSMessageData.Recipients);
-
-          console.log(` REAL SMS sent to ${agent.phone}`);
-          console.log("Africa's Talking Response:", response);
-
-          res.json({
-            message: "SMS reminder sent successfully via Africa's Talking!",
-            smsText: message,
-            provider: "Africa's Talking",
-            status: "sent",
-            timestamp: new Date(),
-          });
-        } catch (smsError) {
-          console.error(" SMS Error:", smsError.message);
-          // Fallback to mock if SMS fails
           console.log(
-            ` Falling back to MOCK SMS: To ${agent.phone}: ${message}`,
+            "AGENT SMS Response:",
+            agentResponse.SMSMessageData.Recipients,
           );
-          res.json({
-            message: "SMS reminder sent (fallback - demo mode)",
-            smsText: message,
-            provider: "mock",
-            status: "sent",
-            error: smsError.message,
-          });
+
+          // Extract agent SMS details
+          if (
+            agentResponse.SMSMessageData &&
+            agentResponse.SMSMessageData.Recipients &&
+            agentResponse.SMSMessageData.Recipients.length > 0
+          ) {
+            const recipient = agentResponse.SMSMessageData.Recipients[0];
+            results.agentSMS = {
+              number: recipient.number,
+              statusCode: recipient.statusCode,
+              status: recipient.status,
+              cost: recipient.cost,
+              messageId: recipient.messageId,
+            };
+          }
+        } catch (agentError) {
+          console.error("Agent SMS Error:", agentError.message);
+          results.agentSMS = {
+            error: agentError.message,
+            status: "failed",
+          };
         }
-      } else {
-        // Mock SMS (demo mode - when credentials not configured)
-        console.log(` DEMO MOCK SMS: To ${agent.phone}`);
-        console.log(`Message: ${message}`);
-        console.log("---");
+
+        // Send SMS to CLIENT
+        try {
+          console.log(
+            `[SMS 2/2] Sending CLIENT NOTIFICATION to: ${lead.client_phone}`,
+          );
+          console.log(`Message: ${clientMessage}\n`);
+
+          const clientResponse = await smsService.send({
+            to: [lead.client_phone],
+            message: clientMessage,
+          });
+          console.log(
+            "CLIENT SMS Response:",
+            clientResponse.SMSMessageData.Recipients,
+          );
+
+          // Extract client SMS details
+          if (
+            clientResponse.SMSMessageData &&
+            clientResponse.SMSMessageData.Recipients &&
+            clientResponse.SMSMessageData.Recipients.length > 0
+          ) {
+            const recipient = clientResponse.SMSMessageData.Recipients[0];
+            results.clientSMS = {
+              number: recipient.number,
+              statusCode: recipient.statusCode,
+              status: recipient.status,
+              cost: recipient.cost,
+              messageId: recipient.messageId,
+            };
+          }
+        } catch (clientError) {
+          console.error("Client SMS Error:", clientError.message);
+          results.clientSMS = {
+            error: clientError.message,
+            status: "failed",
+          };
+        }
+
+        // Determine overall success
+        if (results.agentSMS?.statusCode === 101) {
+          results.message =
+            "SMS sent successfully to both agent and client via Africa's Talking!";
+        } else if (results.agentSMS?.error) {
+          results.message = "SMS delivery failed";
+          results.status = "failed";
+        } else {
+          results.message = "SMS delivery completed";
+        }
 
         res.json({
-          message:
-            "SMS reminder sent (DEMO MODE - Configure Africa's Talking for real SMS)",
-          smsText: message,
+          ...results,
+          provider: "Africa's Talking",
+          agentReminder: agentMessage,
+          clientNotification: clientMessage,
+        });
+      } else {
+        // Mock SMS (demo mode)
+        console.log(`\n[DEMO MODE] SMS SIMULATION`);
+        console.log(`\n[SMS 1/2] AGENT REMINDER to: ${agent.phone}`);
+        console.log(`Message: ${agentMessage}`);
+        console.log(`\n[SMS 2/2] CLIENT NOTIFICATION to: ${lead.client_phone}`);
+        console.log(`Message: ${clientMessage}\n`);
+
+        results.agentSMS = {
+          number: agent.phone,
+          status: "simulated",
+          statusCode: 101,
+        };
+        results.clientSMS = {
+          number: lead.client_phone,
+          status: "simulated",
+          statusCode: 101,
+        };
+        results.message =
+          "SMS reminders sent in DEMO MODE (Configure Africa's Talking for real SMS)";
+
+        res.json({
+          ...results,
           provider: "mock",
-          status: "sent",
+          agentReminder: agentMessage,
+          clientNotification: clientMessage,
           hint: "To enable real SMS, set AFRICASTALKING_API_KEY and AFRICASTALKING_USERNAME in .env",
         });
       }
