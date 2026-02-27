@@ -35,7 +35,7 @@ function AppContent() {
     localStorage.removeItem("token");
     localStorage.removeItem("agent");
   };
-  <Analytics />;
+
   return (
     <div className="app">
       {token && (
@@ -94,6 +94,7 @@ function AppContent() {
           </>
         )}
       </Routes>
+      <Analytics />
     </div>
   );
 }
