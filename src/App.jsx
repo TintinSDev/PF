@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState } from "react";
 import {
   BrowserRouter as Router,
   Routes,
@@ -35,9 +35,10 @@ function AppContent() {
     localStorage.removeItem("token");
     localStorage.removeItem("agent");
   };
-  <Analytics />;
+
   return (
     <div className="app">
+      <Analytics />
       {token && (
         <nav className="navbar">
           <div className="nav-container">
