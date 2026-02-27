@@ -13,6 +13,7 @@ import Dashboard from "./pages/Dashboard";
 import LeadDetail from "./pages/LeadDetail";
 import Properties from "./pages/Properties";
 import "./App.css";
+import { Analytics } from "@vercel/analytics/react";
 
 function AppContent() {
   const [token, setToken] = useState(localStorage.getItem("token"));
@@ -34,7 +35,7 @@ function AppContent() {
     localStorage.removeItem("token");
     localStorage.removeItem("agent");
   };
-
+  <Analytics />;
   return (
     <div className="app">
       {token && (
