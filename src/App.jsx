@@ -94,7 +94,6 @@ function AppContent() {
           </>
         )}
       </Routes>
-      <Analytics />
     </div>
   );
 }
@@ -103,6 +102,7 @@ function App() {
   return (
     <Router>
       <AppContent />
+      <Analytics />
     </Router>
   );
 }
