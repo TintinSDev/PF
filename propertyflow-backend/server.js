@@ -459,7 +459,7 @@ app.delete("/api/leads/:id", authenticateToken, async (req, res) => {
 //       const agentMessage = `PropertyFlow Reminder: Follow up with ${lead.client_name} (${lead.client_phone}) regarding ${lead.property_interest}. Status: ${lead.status}`;
 
 //       // SMS 2: Notification to client about agent interest
-//       const clientMessage = `Hi ${lead.client_name}, thanks for your interest in ${lead.property_interest}. ${agent.name} from PropertyFlow will contact you shortly. Reply STOP to opt out.`;
+//       const clientMessage = `Hi ${lead.client_name}, thanks for your interest in ${lead.property_interest}. ${agent.name} from PropertyFlow will contact you shortly.`;
 
 //       const results = {
 //         agentSMS: null,
@@ -624,7 +624,7 @@ app.post(
       const agentMessage = `PropertyFlow Reminder: Follow up with ${lead.client_name} (${lead.client_phone}) regarding ${lead.property_interest}. Status: ${lead.status}`;
 
       // SMS 2: Notification to client about agent interest
-      const clientMessage = `Hi ${lead.client_name}, thanks for your interest in ${lead.property_interest}. ${agent.name} from PropertyFlow will contact you shortly. Reply STOP to opt out.`;
+      const clientMessage = `Hi ${lead.client_name}, thanks for your interest in ${lead.property_interest}. ${agent.name} from PropertyFlow will contact you shortly.`;
 
       const results = {
         agentSMS: null,
